@@ -22,7 +22,7 @@ from detectron2.data.datasets.coco import convert_to_coco_json
 from detectron2.structures import Boxes, BoxMode, pairwise_iou
 from detectron2.utils.logger import create_small_table
 
-from .evaluator import DatasetEvaluator
+from detectron2.evaluation.evaluator import DatasetEvaluator
 
 
 class COCOEvaluator(DatasetEvaluator):
@@ -36,9 +36,7 @@ class COCOEvaluator(DatasetEvaluator):
         Args:
             dataset_name (str): name of the dataset to be evaluated.
                 It must have either the following corresponding metadata:
-
                     "json_file": the path to the COCO format annotation
-
                 Or it must be in detectron2's standard dataset format
                 so it can be converted to COCO format automatically.
             cfg (CfgNode): config instance
@@ -47,7 +45,6 @@ class COCOEvaluator(DatasetEvaluator):
                 Otherwise, will evaluate the results in the current process.
             output_dir (str): optional, an output directory to dump all
                 results predicted on the dataset. The dump contains two files:
-
                 1. "instance_predictions.pth" a file in torch serialization
                    format that contains all the raw original predictions.
                 2. "coco_instances_results.json" a json file in COCO's result
@@ -234,13 +231,11 @@ class COCOEvaluator(DatasetEvaluator):
     def _derive_coco_results(self, coco_eval, iou_type, class_names=None):
         """
         Derive the desired score numbers from summarized COCOeval.
-
         Args:
             coco_eval (None or COCOEval): None represents no predictions from model.
             iou_type (str):
             class_names (None or list[str]): if provided, will use it to predict
                 per-category AP.
-
         Returns:
             a dict of {metric name: score}
         """
@@ -303,11 +298,9 @@ class COCOEvaluator(DatasetEvaluator):
 def instances_to_coco_json(instances, img_id):
     """
     Dump an "Instances" object to a COCO-format json that's used for evaluation.
-
     Args:
         instances (Instances):
         img_id (int): the image id
-
     Returns:
         list[dict]: list of json annotations in COCO format.
     """
@@ -322,6 +315,7 @@ def instances_to_coco_json(instances, img_id):
     classes = instances.pred_classes.tolist()
 
     has_mask = instances.has("pred_masks")
+    has_mask_scores = instances.has("mask_scores")
     if has_mask:
         # use RLE to encode the masks, because they are too large and takes memory
         # since this evaluator stores outputs of the entire dataset
@@ -335,6 +329,9 @@ def instances_to_coco_json(instances, img_id):
             # unless you decode it. Thankfully, utf-8 works out (which is also what
             # the pycocotools/_mask.pyx does).
             rle["counts"] = rle["counts"].decode("utf-8")
+        
+        if has_mask_scores:
+            mask_scores = instances.mask_scores.tolist()
 
     has_keypoints = instances.has("pred_keypoints")
     if has_keypoints:
@@ -350,6 +347,9 @@ def instances_to_coco_json(instances, img_id):
         }
         if has_mask:
             result["segmentation"] = rles[k]
+            if has_mask_scores:
+                result["mask_score"] = mask_scores[k]
+
         if has_keypoints:
             # In COCO annotations,
             # keypoints coordinates are pixel indices.
@@ -487,8 +487,14 @@ def _evaluate_predictions_on_coco(coco_gt, coco_results, iou_type, kpt_oks_sigma
         # use the box area as the area of the instance, instead of the mask area.
         # This leads to a different definition of small/medium/large.
         # We remove the bbox field to let mask AP use mask area.
+        # We also replace `score` with `mask_score` when using mask scoring.
+        has_mask_scores = "mask_score" in coco_results[0]
+        
         for c in coco_results:
             c.pop("bbox", None)
+            if has_mask_scores:
+                c["score"] = c["mask_score"]
+                del c["mask_score"]
 
     coco_dt = coco_gt.loadRes(coco_results)
     coco_eval = COCOeval(coco_gt, coco_dt, iou_type)

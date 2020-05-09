@@ -24,9 +24,11 @@ _C.VERSION = 2
 _C.MODEL = CN()
 _C.MODEL.LOAD_PROPOSALS = False
 _C.MODEL.MASK_ON = False
+_C.MODEL.MASKIOU_ON = False
 _C.MODEL.KEYPOINT_ON = False
 _C.MODEL.DEVICE = "cuda"
 _C.MODEL.META_ARCHITECTURE = "GeneralizedRCNN"
+_C.MODEL.MASKIOU_LOSS_WEIGHT = 1.0
 
 # Path (possibly with schema like catalog:// or detectron2://) to a checkpoint file
 # to be loaded to the model. You can find available models in the model zoo.
@@ -315,6 +317,13 @@ _C.MODEL.ROI_BOX_CASCADE_HEAD.BBOX_REG_WEIGHTS = (
     (30.0, 30.0, 15.0, 15.0),
 )
 _C.MODEL.ROI_BOX_CASCADE_HEAD.IOUS = (0.5, 0.6, 0.7)
+
+
+# ---------------------------------------------------------------------------- #
+# Mask Head
+# ---------------------------------------------------------------------------- #
+_C.MODEL.ROI_MASKIOU_HEAD = CN()
+_C.MODEL.ROI_MASKIOU_HEAD.NAME = "MaskIoUHead"
 
 
 # ---------------------------------------------------------------------------- #

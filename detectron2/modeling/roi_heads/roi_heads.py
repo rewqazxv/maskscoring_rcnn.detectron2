@@ -16,9 +16,10 @@ from ..poolers import ROIPooler
 from ..proposal_generator.proposal_utils import add_ground_truth_to_proposals
 from ..sampling import subsample_labels
 from .box_head import build_box_head
-from .fast_rcnn import FastRCNNOutputLayers
-from .keypoint_head import build_keypoint_head
-from .mask_head import build_mask_head
+from .fast_rcnn import FastRCNNOutputLayers, FastRCNNOutputs
+from .keypoint_head import build_keypoint_head, keypoint_rcnn_inference, keypoint_rcnn_loss
+from .mask_head import build_mask_head, mask_rcnn_inference, mask_rcnn_loss
+from .maskiou_head import build_maskiou_head, mask_iou_inference, mask_iou_loss
 
 ROI_HEADS_REGISTRY = Registry("ROI_HEADS")
 ROI_HEADS_REGISTRY.__doc__ = """
@@ -458,6 +459,7 @@ class StandardROIHeads(ROIHeads):
         self._init_box_head(cfg, input_shape)
         self._init_mask_head(cfg, input_shape)
         self._init_keypoint_head(cfg, input_shape)
+        self._init_maskiou_head(cfg)
 
     def _init_box_head(self, cfg, input_shape):
         # fmt: off
@@ -512,6 +514,14 @@ class StandardROIHeads(ROIHeads):
             cfg, ShapeSpec(channels=in_channels, width=pooler_resolution, height=pooler_resolution)
         )
 
+    def _init_maskiou_head(self, cfg):
+        self.maskiou_on = cfg.MODEL.MASKIOU_ON
+        if not self.maskiou_on:
+            return
+
+        self.maskiou_head = build_maskiou_head(cfg)
+        self.maskiou_weight = cfg.MODEL.MASKIOU_LOSS_WEIGHT
+
     def _init_keypoint_head(self, cfg, input_shape):
         # fmt: off
         self.keypoint_on  = cfg.MODEL.KEYPOINT_ON
@@ -556,7 +566,13 @@ class StandardROIHeads(ROIHeads):
             # Usually the original proposals used by the box head are used by the mask, keypoint
             # heads. But when `self.train_on_pred_boxes is True`, proposals will contain boxes
             # predicted by the box head.
-            losses.update(self._forward_mask(features, proposals))
+            if self.maskiou_on:
+                loss, mask_features, selected_mask, labels, maskiou_targets = self._forward_mask(features, proposals)
+                losses.update(loss)
+                losses.update(self._forward_maskiou(mask_features, proposals, selected_mask, labels, maskiou_targets))
+            else:
+                losses.update(self._forward_mask(features, proposals))
+            
             losses.update(self._forward_keypoint(features, proposals))
             return proposals, losses
         else:
@@ -589,7 +605,11 @@ class StandardROIHeads(ROIHeads):
         assert not self.training
         assert instances[0].has("pred_boxes") and instances[0].has("pred_classes")
 
-        instances = self._forward_mask(features, instances)
+        if self.maskiou_on:
+            instances, mask_features = self._forward_mask(features, instances)
+            instances = self._forward_maskiou(mask_features, instances)
+        else:
+            instances = self._forward_mask(features, instances)
         instances = self._forward_keypoint(features, instances)
         return instances
 
@@ -636,14 +656,12 @@ class StandardROIHeads(ROIHeads):
     ) -> Union[Dict[str, torch.Tensor], List[Instances]]:
         """
         Forward logic of the mask prediction branch.
-
         Args:
             features (dict[str, Tensor]): mapping from feature map names to tensor.
                 Same as in :meth:`ROIHeads.forward`.
             instances (list[Instances]): the per-image instances to train/predict masks.
                 In training, they can be the proposals.
                 In inference, they can be the predicted boxes.
-
         Returns:
             In training, a dict of losses.
             In inference, update `instances` with new fields "pred_masks" and return it.
@@ -658,11 +676,37 @@ class StandardROIHeads(ROIHeads):
             proposals, _ = select_foreground_proposals(instances, self.num_classes)
             proposal_boxes = [x.proposal_boxes for x in proposals]
             mask_features = self.mask_pooler(features, proposal_boxes)
-            return self.mask_head(mask_features, proposals)
+            return self.mask_head(mask_features, proposals, self.maskiou_on)
         else:
             pred_boxes = [x.pred_boxes for x in instances]
             mask_features = self.mask_pooler(features, pred_boxes)
-            return self.mask_head(mask_features, instances)
+            return self.mask_head(mask_features, instances, self.maskiou_on)
+
+    def _forward_maskiou(self, mask_features, instances, selected_mask=None, labels=None, maskiou_targets=None):
+        """
+        Forward logic of the mask iou prediction branch.
+
+        Args:
+            features (list[Tensor]): #level input features for mask prediction
+            instances (list[Instances]): the per-image instances to train/predict masks.
+                In training, they can be the proposals.
+                In inference, they can be the predicted boxes.
+
+        Returns:
+            In training, a dict of losses.
+            In inference, calibrate instances' scores.
+        """
+        if not self.maskiou_on:
+            return {} if self.training else instances
+
+        if self.training:
+            pred_maskiou = self.maskiou_head(mask_features, selected_mask)
+            return {"loss_maskiou": mask_iou_loss(labels, pred_maskiou, maskiou_targets, self.maskiou_weight)}
+
+        else:
+            pred_maskiou = self.maskiou_head(mask_features, torch.cat([i.pred_masks for i in instances], 0))
+            mask_iou_inference(instances, pred_maskiou)
+            return instances
 
     def _forward_keypoint(
         self, features: Dict[str, torch.Tensor], instances: List[Instances]
