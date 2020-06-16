@@ -607,7 +607,8 @@ class StandardROIHeads(ROIHeads):
 
         if self.maskiou_on:
             instances, mask_features = self._forward_mask(features, instances)
-            instances = self._forward_maskiou(mask_features, instances)
+            if mask_features.shape[0] != 0:
+                instances = self._forward_maskiou(mask_features, instances)
         else:
             instances = self._forward_mask(features, instances)
         instances = self._forward_keypoint(features, instances)

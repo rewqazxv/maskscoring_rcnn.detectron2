@@ -228,17 +228,18 @@ class BaseMaskRCNNHead(nn.Module):
         Returns:
             A dict of losses in training. The predicted "instances" in inference.
         """
+        rawx = x
         x = self.layers(x)
         if self.training:
             if maskiou_on:
                 loss, selected_mask, labels, maskiou_targets = mask_rcnn_loss(x, instances, self.vis_period, maskiou_on=maskiou_on)
-                return {"loss_mask": loss}, x, selected_mask, labels, maskiou_targets
+                return {"loss_mask": loss}, rawx, selected_mask, labels, maskiou_targets
             else:
                 return {"loss_mask": mask_rcnn_loss(x, instances, self.vis_period)}
         else:
             mask_rcnn_inference(x, instances)
             if maskiou_on:
-                return instances, x
+                return instances, rawx
             else:
                 return instances
 
